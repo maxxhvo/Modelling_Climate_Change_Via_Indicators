@@ -1,0 +1,345 @@
+---
+title: "APPENDIX ~ CLIMATE ANALYSIS: STA141A Final Project"
+date: "April 12"
+output:
+  pdf_document:
+    latex_engine: xelatex
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tinytex.verbose = TRUE)
+```
+
+# Data Loading and Preliminary Analysis
+```{r}
+data = na.omit(read.csv("/cloud/project/climate_change.csv"))
+
+# For Consistency in Year Based/Month Based Analyses, we remove the first 8 months 
+# of the dataset (as the data randomly begins from the 5th month of 1983)
+
+# Therefore, our dataset starts from 1984
+climate <- data[-(1:8),]
+
+#brief summary; head()/taiL()
+head(climate,10)
+tail(climate,10)
+summary(climate)
+
+# structure of dataframe
+str(climate)
+
+# checking for any duplicate data (there is none)
+nrow(climate)==nrow(unique(climate))
+
+```
+# Exploratory Analysis 
+
+### FIGURE 2: Testing Correlation Between Variables
+
+```{r}
+library(GGally)
+library(dplyr)
+library(ggplot2)
+
+### GROUPINGS OF THESE VECTORS EXPLAINED IN THE PAPER ###
+variables <- c("Temp","Year","Month","MEI","CO2","CH4","N2O","CFC.11","CFC.12", "TSI", "Aerosols")
+variables_of_interest <- c("Temp","Year","Month","CO2","CH4","N2O","CFC.11","CFC.12", "Aerosols")
+variables_of_interest2 <- c("Temp","Year","CO2","CH4","N2O","CFC.11","CFC.12", "Aerosols")
+
+# General Scatter Plot Matrix
+climate %>% 
+  ggpairs(columns = variables_of_interest,
+           upper = list(continuous = wrap('cor', size = 3)),
+           lower = list(continuous = wrap('smooth',size = .1, alpha = 0.03))) +
+  theme_grey() +
+  theme(axis.text = element_text(size = 3)) +
+  labs(title = "FIGURE 2: Scatter Plot Matrix")
+
+# Scatter Plot Matrix Accounting for Categorical Variable
+climate %>% 
+  ggpairs(columns = variables_of_interest2,
+           aes(color = factor(Month)),
+           upper = list(continuous = wrap('cor', size = 1)),
+           lower = list(combo = list(continuous = "smooth", discrete = "boxplot"),
+                        size = 0.1, alpha = 0.1),
+           diag = list(continuous = wrap('densityDiag', alpha = 0.2))) + 
+  theme_grey() + 
+  theme(axis.text = element_text(size = 1))
+
+# Lower Half is Correlations; Diagonal Is Density Functions; Upper Half is Corr Values
+
+
+pairs(climate[variables_of_interest], main = "Pairwise Scatterplot Matrix")
+```
+
+# Testing Linear and Logistic ~ the plots are not actually used, but inform decisions
+```{r}
+linear_climate_model = lm(Temp ~ ., data = climate)
+summary(linear_climate_model)
+
+# Exploratory Visualization of the Response Variable ~ FIGURES 2a-2d
+plot(linear_climate_model)
+
+############## PROB NEEDS FIXING ################
+binomial_climate_model <- climate %>%
+  mutate(HighTemp = ifelse(Temp < mean(Temp), 1, 0)) %>%
+  glm(HighTemp ~ . - Temp, data = ., family = "binomial") # deal with multi-collinearity
+
+# balancing sensitivity and specificity of response variable
+summary(binomial_climate_model)
+# NEED TO USE ROC CURVE OR OTHER METHOD TO DETERMINE THRESHOLDS OR 
+# CLUSTERING/HIERARCHICAL METHODS INSTEAD
+
+##### BRIEF VISUALIZATION W/ GGPLOT #####
+ggplot(climate, aes(sample = Temp)) +
+  geom_qq() +
+  geom_qq_line(col = "red") +
+  ggtitle("Q-Q Plot of Temperature") +
+  theme_minimal()
+```
+
+# Testing LDA ~ Confusion Table
+```{r}
+library(MASS)
+lda_climate_model = lda(Temp ~ ., data = climate)
+summary(lda_climate_model)
+
+# Create a confusion matrix
+predictions <- predict(lda_climate_model)
+confusion_matrix <- table(Actual = climate$Temp, Predicted = predictions$class)
+### WE DID NOT PRINT THE OUTPUTS AS IT IS INCOLCUSIVE AND PRINTS TOO MUCH DATA
+```
+
+
+# Deciding on The Best Model
+```{r}
+library(leaps)
+
+
+#### OLD CODE THAT USES ALL VARIABLES ####
+predictor_names <- names(climate)[-which(names(climate) == "Temp")]
+all_subsets <- regsubsets(Temp ~ ., data = climate, 
+                        nvmax = length(predictor_names), method = "exhaustive")
+# Get the list of all subsets
+all_subsets_list <- summary(all_subsets)$which; all_subsets_list
+#### ~ you would use predictor_names in the for loop instead
+
+included_vars <- c("Year", "MEI", "CO2", "CH4", "N2O", "CFC.11", "CFC.12", "Aerosols")
+formula_str <- paste("Temp ~", paste(included_vars, collapse = " + "))
+formula <- as.formula(formula_str)
+all_subsets <- regsubsets(formula, data = climate, 
+                          nvmax = length(included_vars), method = "exhaustive")
+
+####### WE CAN CHANGE THE METHOD OF SEARCH but since the algorithm returns the best  
+# model of each size (number of parameters 2-10 or number of predictors 1-9), 
+# so the results do not depend on a penalty model for model size: it doesn’t make 
+# any difference whether you want to use AIC, BIC, CIC, DIC #######
+
+# Initialize a dataframe to store model specifications, MSE, and adjR2
+model_info <- data.frame(
+  model = character(),
+  MSE = numeric(),
+  R2 = numeric(),
+  adjR2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Extract Values for Every Model Size (1-9 predictors)
+for (i in 1:length(included_vars)) {
+  # Extract the coefficients for the best model of size i
+  model_coef <- coef(all_subsets, id = i)
+  model_formula <- as.formula(paste("Temp ~", 
+                    paste(names(model_coef)[-1], collapse = "+"))) #create formulas
+  # Fit Models
+  fit <- lm(model_formula, data = climate)
+  
+  # Calculate MSE
+  predictions <- predict(fit, newdata = climate)
+  mse <- mean((climate$Temp - predictions)^2)
+  # Get R2 Values
+  r2 <- summary(fit)$r.squared
+  adj_r2 <- summary(fit)$adj.r.squared
+  
+  # Store model information
+  model_info <- rbind(model_info, data.frame(
+    model = deparse(model_formula),
+    MSE = mse,
+    R2 = r2,
+    adjR2 = adj_r2,
+    stringsAsFactors = FALSE
+  ))
+}
+
+model_info
+```
+
+# Selection Criteria
+```{r}
+# Regsubsets Identifies the Best Model at each # of predictors (1-9); 
+# We decide on the best model by considering the model with the lowest MSE that 
+# does not overfit the data (the adjusted R2 is not significantly smaller than the R2)
+
+filter <- model_info[model_info$adjR2 >= (0.95 * model_info$R2), ]
+
+# Choose the model with the lowest MSE from the filtered models
+best_model <- filter[which.min(filter$MSE), ]
+
+print(best_model)
+```
+
+# Analyzing Our Model: Figure 3
+
+```{r}
+best_model_formula <- as.formula(best_model$model)
+
+
+# Fit the best model
+best_fit <- lm(best_model_formula, data = climate)
+# FIGURE 3 (a-d)
+plot(best_fit)
+
+# Analysis ~ t-test
+summary(best_fit)
+qt(1-0.05/2, 300-8-1)
+
+# F-stat overall significance of the model
+summary(best_fit)$fstatistic[1]
+qf(1-0.05,df1 = 8, df2 = 300-8-1)
+
+anova_table <- anova(best_fit)
+print(anova_table)
+
+# Calculating F-val
+mean_sq_model <- sum(anova_table$`Mean Sq`[1:8])
+F_value <- mean_sq_model /anova_table$`Mean Sq`[9]
+# F-stat compares the variability explained by the predictors (Mean Sq Model) 
+# with the variability not explained by the model (Mean Sq Residuals)
+F_value
+```
+# F-test Lack of Fit
+```{r}
+residuals <- residuals(best_fit)
+fitted_values <- fitted(best_fit)
+
+# Calculate lack-of-fit sum of squares
+n <- length(residuals)
+mean_residuals <- mean(residuals)
+lack_of_fit_ss <- sum((residuals - mean_residuals)^2)
+
+# Calculate residual sum of squares
+residual_ss <- sum(residuals^2)
+
+# Degrees of freedom for the lack-of-fit test
+df_lack_of_fit <- n - length(coefficients(best_fit)) #Adjust for number of coefficients 
+
+# Degrees of freedom for residuals
+df_residuals <- df.residual(best_fit)
+
+# Calculate F-value for lack of fit
+F_lack_of_fit <- (lack_of_fit_ss / df_lack_of_fit) / (residual_ss / df_residuals)
+F_critical <- qf(1 - 0.05, df_lack_of_fit, df_residuals)
+
+# Calculate p-value for lack of fit
+p_value_lack_of_fit <- pf(F_lack_of_fit, df_lack_of_fit, df_residuals, lower.tail = FALSE)
+
+# Print results
+cat("F-critical for LOF:", F_critical, "\n")
+cat("F-value for lack of fit:", F_lack_of_fit, "\n")
+```
+
+
+# Cross Validation
+```{r}
+library(caret)
+
+# Leave-One-Out-Cross-Validation
+train_control_loocv <- trainControl(method = "LOOCV")
+loocv <- train(best_model_formula, data = climate, method = "lm", trControl = train_control_loocv)
+
+# Calculate MSE for LOOCV
+mse1 <- loocv$results$RMSE^2
+cat("LOOCV MSE:", mse1, "\n")
+
+# K-fold cross-validation
+train_control_kfold <- trainControl(method = "cv", number = 10)
+kfold <- train(best_model_formula, data = climate, method = "lm", trControl = train_control_kfold)
+
+# Calculate MSE for K-fold CV
+mse2 <- kfold$results$RMSE^2
+cat("K-fold MSE:", mse2, "\n")
+```
+
+
+# Additional EXPLORATORY Analysis
+```{r}
+split_month <- climate %>%
+  split(.$Month) %>%
+  lapply(function(.) {
+    .[order(.$Year, decreasing = FALSE), ]
+  })
+
+# split_month
+### NOT PRINTED AS THE OUTPUT IS TOO LONG
+```
+
+```{r}
+aggregate_temperature <- function(df) {
+  
+  # Create a new column that groups years into sets of 5
+  df <- df %>% 
+    mutate(YearGroup = (row_number() - 1) %/% 5 + 1)
+  
+  # Calculate the average temperature for each group and rename the year group
+  result <- df %>% 
+    group_by(YearGroup) %>%
+    summarise(
+      YearRange = paste(min(Year), max(Year), sep = " - "), 
+      Temperature = mean(Temp),
+      Month = first(Month) # unchanged
+    ) %>%
+    ungroup()
+  
+  return(result)
+}
+
+# Apply the function to each split_month dataframe
+bymonth <- lapply(split_month, aggregate_temperature)
+# bymonth
+### NOT PRINTED AS THE OUTPUT IS TOO LONG
+```
+
+# FIGURE 1 Exploration of How the Categorical Variable of Month Affects Temperature by Year
+```{r}
+by_yeargroup <- list()
+
+for (i in 1:5) {
+  new_df <- do.call(rbind, lapply(bymonth, function(df) df[i, ]))
+  by_yeargroup[[i]] <- new_df
+}
+# by_yeargroup
+### NOT PRINTED AS THE OUTPUT IS TOO LONG
+
+plot <- ggplot() +
+  labs(title = "Temperature by Month According to Year Range",
+       x = "Month",
+       y = "Temperature") +
+  scale_color_discrete(name = "Year Range") +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +  # Set x-axis breaks and labels
+  theme_minimal()
+
+# Iterate through each data frame in the by_yeargroup list and add a geom_line() for each
+for (i in 1:length(by_yeargroup)) {
+  plot <- plot + geom_line(data = by_yeargroup[[i]], aes(x = Month, 
+                                      y = Temperature, color = factor(YearRange)))
+}
+
+plot
+```
+
+
+
+
