@@ -1,12 +1,7 @@
 ---
 title: "APPENDIX ~ CLIMATE ANALYSIS: STA141A Final Project"
-date: "April 12"
-output:
-  pdf_document:
-    latex_engine: xelatex
-editor_options: 
-  markdown: 
-    wrap: 72
+author: "Max Vo"
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
